@@ -53,7 +53,9 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 
 /* ---------- Camera ---------- */
 #cam{background:#000}
-#video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+#video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+#video.fill{object-fit:cover}
+#resTag{background:rgba(0,0,0,.55);color:#ddd;font-size:11px;padding:4px 7px;border-radius:7px}
 #video.mirror{transform:scaleX(-1)}
 #prompter{position:absolute;left:0;right:0;top:0;overflow:hidden;touch-action:none;
   padding-top:var(--st)}
@@ -141,6 +143,9 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
     <div class="row">
       <button class="btn red" id="goRecord">Abrir câmera e gravar</button>
     </div>
+    <div class="row">
+      <button class="btn" id="goPip">Modo flutuante (usar a câmera do celular)</button>
+    </div>
   </div>
 </section>
 
@@ -153,13 +158,14 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
     <div id="prompterText"></div>
     <div id="pausedTag">toque no texto para rolar</div>
   </div>
-  <div class="camTop" id="camTop"><span id="timer">00:00</span></div>
+  <div class="camTop" id="camTop" style="bottom:calc(var(--sb) + 196px)"><span id="resTag"></span><span id="timer">00:00</span></div>
   <div id="countdown"></div>
   <div id="camMsg"></div>
   <div class="camBottom">
     <div class="adj">
       <div class="pill"><button id="spDown">−</button><span id="spVal">vel 40</span><button id="spUp">+</button></div>
       <div class="pill"><button id="fsDown">−</button><span id="fsVal">letra 34</span><button id="fsUp">+</button></div>
+      <div class="pill" id="zoomPill" style="display:none"><button id="zmDown">−</button><span id="zmVal">zoom 1x</span><button id="zmUp">+</button></div>
     </div>
     <div class="recRow">
       <button class="round" id="closeCam" aria-label="Fechar">
@@ -190,6 +196,31 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   </div>
 </section>
 
+<!-- PIP -->
+<section id="pip" class="screen">
+  <div class="top">
+    <button class="iconbtn" id="pipBack" aria-label="Voltar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <h1 style="font-size:19px">Modo flutuante</h1>
+  </div>
+  <div class="ed" style="overflow:auto">
+    <video id="pipVideo" playsinline muted controls style="width:100%;border-radius:12px;background:#000;aspect-ratio:16/9"></video>
+    <p class="hint" id="pipStatus">Preparando o texto…</p>
+    <div style="height:6px;background:var(--panel2);border-radius:3px;overflow:hidden"><div id="pipBar" style="height:100%;width:0;background:var(--accent)"></div></div>
+    <div class="set" style="margin:6px 0 0"><label>Velocidade <em id="pSpeedV"></em></label><input type="range" id="pSpeed" min="5" max="200" step="1"></div>
+    <div class="set" style="margin:0"><label>Letra na janelinha <em id="pFontV"></em></label><input type="range" id="pFont" min="40" max="120" step="2"></div>
+    <button class="btn" id="pipRebuild" style="flex:0 0 52px">Aplicar velocidade e letra</button>
+    <button class="btn red" id="pipOpen" style="flex:0 0 52px" disabled>Abrir janela flutuante</button>
+    <p class="hint" style="line-height:1.6">
+      1. Toque em <b>Abrir janela flutuante</b>. O texto vira uma janelinha.<br>
+      2. Saia do app e abra a <b>Câmera</b> do celular (ou Instagram, CapCut…).<br>
+      3. Comece a gravar e toque em ▶ na janelinha. Ela tem pausar e voltar/avançar.<br>
+      4. Arraste a janelinha para perto da lente. Dá para aumentar com dois dedos.
+    </p>
+  </div>
+</section>
+
 <!-- SETTINGS -->
 <div id="sheet">
   <div class="sheetBox">
@@ -202,6 +233,8 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
       <div class="seg" data-key="countdown"><button data-v="0">Sem</button><button data-v="3">3 s</button><button data-v="5">5 s</button></div></div>
     <div class="set"><label>Qualidade</label>
       <div class="seg" data-key="quality"><button data-v="720">720p</button><button data-v="1080">1080p</button><button data-v="2160">4K</button></div></div>
+    <div class="set"><label>Imagem na tela</label>
+      <div class="seg" data-key="fit"><button data-v="contain">Real (sem cortar)</button><button data-v="cover">Preencher</button></div></div>
     <div class="set"><label>Alinhamento do texto</label>
       <div class="seg" data-key="align"><button data-v="left">Esquerda</button><button data-v="center">Centro</button></div></div>
     <div class="set"><label>Espelhar texto (para vidro de teleprompter)</label>
@@ -212,6 +245,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 
 <div class="toast" id="toast"></div>
 
+<script src="vendor/mp4-muxer.js"></script>
 <script>
 (() => {
 const $ = id => document.getElementById(id);
@@ -220,7 +254,7 @@ const store = {
   set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
 };
 
-const DEFAULTS = {speed:40, fontSize:34, area:42, dim:55, countdown:3, quality:1080, align:'center', mirrorText:0, facing:'user'};
+const DEFAULTS = {speed:40, fontSize:34, area:42, dim:55, countdown:3, quality:1080, align:'center', mirrorText:0, facing:'user', fit:'contain', pipFont:64};
 let S = Object.assign({}, DEFAULTS, store.get('tp_settings', {}));
 let scripts = store.get('tp_scripts', null);
 if (!scripts){
@@ -371,21 +405,52 @@ const DIM = {720:[1280,720], 1080:[1920,1080], 2160:[3840,2160]};
 async function startStream(){
   stopStream();
   const [w,h] = DIM[S.quality] || DIM[1080];
-  const portrait = window.innerHeight >= window.innerWidth;
+  // Sensors are landscape: ask in landscape terms; the phone rotates the frames itself.
   const cons = {
-    video: { facingMode: S.facing, width:{ideal: portrait ? h : w}, height:{ideal: portrait ? w : h}, frameRate:{ideal:30} },
+    video: { facingMode: S.facing, width:{ideal: w}, height:{ideal: h}, frameRate:{ideal:30} },
     audio: { echoCancellation:true, noiseSuppression:true }
   };
   try{
     stream = await navigator.mediaDevices.getUserMedia(cons);
   }catch(err){
-    try{ stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:S.facing}, audio:true}); }
-    catch(err2){ throw err2; }
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:S.facing}, audio:true});
   }
   video.srcObject = stream;
   video.classList.toggle('mirror', S.facing === 'user');
+  video.classList.toggle('fill', S.fit === 'cover');
   await video.play().catch(()=>{});
+  setupZoom();
+  showRes();
 }
+function showRes(){
+  const upd = () => { $('resTag').textContent = video.videoWidth ? `${video.videoWidth}×${video.videoHeight}` : ''; };
+  upd(); video.onloadedmetadata = upd; video.onresize = upd;
+}
+let zoomCaps = null;
+function setupZoom(){
+  zoomCaps = null;
+  const t = stream && stream.getVideoTracks()[0];
+  let caps = {};
+  try{ caps = t && t.getCapabilities ? t.getCapabilities() : {}; }catch(e){}
+  if (caps.zoom && caps.zoom.max > caps.zoom.min){
+    zoomCaps = caps.zoom;
+    // start as wide as the camera allows
+    S.zoom = zoomCaps.min; applyZoom();
+    $('zoomPill').style.display = 'flex';
+  } else {
+    $('zoomPill').style.display = 'none';
+  }
+}
+function applyZoom(){
+  if (!zoomCaps || !stream) return;
+  const t = stream.getVideoTracks()[0];
+  const step = zoomCaps.step || 0.1;
+  S.zoom = Math.min(zoomCaps.max, Math.max(zoomCaps.min, Math.round(S.zoom / step) * step));
+  t.applyConstraints({advanced:[{zoom:S.zoom}]}).catch(()=>{});
+  $('zmVal').textContent = 'zoom ' + S.zoom.toFixed(1).replace('.', ',') + 'x';
+}
+$('zmUp').onclick = () => { if (zoomCaps){ S.zoom += 0.1; applyZoom(); } };
+$('zmDown').onclick = () => { if (zoomCaps){ S.zoom -= 0.1; applyZoom(); } };
 function stopStream(){
   if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
   video.srcObject = null;
@@ -450,7 +515,7 @@ async function beginRec(){
   cd.style.display = 'none'; counting = false;
 
   chunks = [];
-  const bps = {720:5e6, 1080:10e6, 2160:35e6}[S.quality] || 10e6;
+  const bps = {720:8e6, 1080:16e6, 2160:45e6}[S.quality] || 16e6;
   try{
     recorder = new MediaRecorder(stream, Object.assign({videoBitsPerSecond: bps}, type ? {mimeType:type} : {}));
   }catch(e){
@@ -536,12 +601,172 @@ document.querySelectorAll('.seg').forEach(seg => seg.onclick = e => {
   const k = seg.dataset.key; const v = b.dataset.v;
   S[k] = isNaN(+v) ? v : +v; saveS(); syncSettingsUI(); applyPrompterStyle();
   if (k === 'quality' && $('cam').classList.contains('on') && !recording) startStream().catch(()=>{});
+  if (k === 'fit') video.classList.toggle('fill', S.fit === 'cover');
 });
 function openSettings(){ syncSettingsUI(); $('sheet').classList.add('on'); }
 $('openSettings1').onclick = openSettings;
 $('closeSettings').onclick = () => $('sheet').classList.remove('on');
 $('sheet').onclick = e => { if (e.target.id === 'sheet') $('sheet').classList.remove('on'); };
 $('openSettings2').onclick = () => { if (recording) return toast('Pare a gravação para abrir os ajustes.'); openSettings(); };
+
+/* ---------- Floating mode (Picture-in-Picture) ----------
+   The text is rendered into a real video file, so it keeps playing in the
+   floating window even while another app (the phone's Camera) is in front. */
+const PW = 960, PH = 540, FPS = 30, LEAD = 2, TAIL = 3;
+const pipVideo = $('pipVideo');
+let pipUrl = null, pipBuilding = 0;
+
+function wrapLines(ctx, text, maxW){
+  const out = [];
+  text.replace(/\r/g,'').split('\n').forEach(par => {
+    const words = par.split(/\s+/).filter(Boolean);
+    if (!words.length){ out.push(''); return; }
+    let line = '';
+    words.forEach(w => {
+      const test = line ? line + ' ' + w : w;
+      if (ctx.measureText(test).width <= maxW || !line) line = test;
+      else { out.push(line); line = w; }
+    });
+    out.push(line);
+  });
+  return out;
+}
+function makeScene(){
+  const c = document.createElement('canvas'); c.width = PW; c.height = PH;
+  const ctx = c.getContext('2d');
+  const fs = S.pipFont, lh = Math.round(fs * 1.3), pad = 40, top = 36;
+  ctx.font = `600 ${fs}px -apple-system, "Segoe UI", Roboto, Arial, sans-serif`;
+  const lines = wrapLines(ctx, current.text.trim(), PW - pad * 2);
+  // keep the same reading pace (lines per second) as the camera mode
+  const speed = S.speed * fs / S.fontSize;
+  const maxPos = Math.max(0, lines.length * lh - lh * 2);
+  const duration = LEAD + maxPos / speed + TAIL;
+  function draw(t){
+    const pos = Math.min(maxPos, Math.max(0, (t - LEAD) * speed));
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, PW, PH);
+    if (S.mirrorText) ctx.setTransform(-1,0,0,1,PW,0);
+    ctx.font = `600 ${fs}px -apple-system, "Segoe UI", Roboto, Arial, sans-serif`;
+    ctx.fillStyle = '#fff'; ctx.textBaseline = 'top';
+    ctx.textAlign = S.align === 'left' ? 'left' : 'center';
+    const x = S.align === 'left' ? pad : PW / 2;
+    const first = Math.max(0, Math.floor((pos - top) / lh) - 1);
+    for (let i = first; i < lines.length; i++){
+      const y = top + i * lh - pos;
+      if (y > PH) break;
+      ctx.fillText(lines[i], x, y);
+    }
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.fillStyle = '#ff3b30';
+    ctx.beginPath(); ctx.moveTo(8, top + lh*0.3); ctx.lineTo(24, top + lh*0.45); ctx.lineTo(8, top + lh*0.6); ctx.fill();
+  }
+  return {c, draw, duration};
+}
+function pipProgress(p, msg){
+  $('pipBar').style.width = Math.round(p * 100) + '%';
+  if (msg) $('pipStatus').textContent = msg;
+}
+async function encodeFast(scene, job){
+  if (!window.VideoEncoder || !window.VideoFrame || !window.Mp4Muxer) return null;
+  const cfg = {codec:'avc1.42001f', width:PW, height:PH, bitrate:1_500_000, framerate:FPS};
+  try{ const sup = await VideoEncoder.isConfigSupported(cfg); if (!sup.supported) return null; }catch(e){ return null; }
+  const muxer = new Mp4Muxer.Muxer({target: new Mp4Muxer.ArrayBufferTarget(),
+    video:{codec:'avc', width:PW, height:PH}, fastStart:'in-memory'});
+  let failed = null;
+  const enc = new VideoEncoder({output:(chunk, meta) => muxer.addVideoChunk(chunk, meta), error:e => failed = e});
+  enc.configure(cfg);
+  const total = Math.ceil(scene.duration * FPS);
+  for (let i = 0; i < total; i++){
+    if (job !== pipBuilding) { try{ enc.close(); }catch(e){} return 'cancel'; }
+    if (failed) return null;
+    scene.draw(i / FPS);
+    const f = new VideoFrame(scene.c, {timestamp: Math.round(i * 1e6 / FPS), duration: Math.round(1e6 / FPS)});
+    enc.encode(f, {keyFrame: i % (FPS * 2) === 0}); f.close();
+    while (enc.encodeQueueSize > 8) await new Promise(r => setTimeout(r, 2));
+    if (i % 15 === 0){ pipProgress(i / total, `Preparando o texto… ${Math.round(i / total * 100)}%`); await new Promise(r => setTimeout(r, 0)); }
+  }
+  await enc.flush(); enc.close();
+  if (failed) return null;
+  muxer.finalize();
+  return new Blob([muxer.target.buffer], {type:'video/mp4'});
+}
+async function encodeRealtime(scene, job){
+  // fallback: record the canvas in real time (slower, same result)
+  const types = ['video/mp4;codecs=avc1','video/mp4','video/webm;codecs=vp8','video/webm'];
+  const type = types.find(t => { try{ return MediaRecorder.isTypeSupported(t); }catch(e){ return false; } }) || '';
+  const st = scene.c.captureStream(FPS);
+  const rec = new MediaRecorder(st, type ? {mimeType:type, videoBitsPerSecond:1_500_000} : {});
+  const parts = []; rec.ondataavailable = e => e.data.size && parts.push(e.data);
+  const done = new Promise(r => rec.onstop = r);
+  rec.start(500);
+  const t0 = performance.now();
+  await new Promise(resolve => {
+    (function step(){
+      if (job !== pipBuilding){ resolve(); return; }
+      const t = (performance.now() - t0) / 1000;
+      scene.draw(t); pipProgress(t / scene.duration, `Preparando o texto… ${Math.min(99, Math.round(t / scene.duration * 100))}% (mantenha esta tela aberta)`);
+      if (t >= scene.duration) resolve(); else requestAnimationFrame(step);
+    })();
+  });
+  rec.stop(); await done; st.getTracks().forEach(t => t.stop());
+  if (job !== pipBuilding) return 'cancel';
+  return new Blob(parts, {type:(rec.mimeType || type || 'video/mp4').split(';')[0]});
+}
+async function buildPip(){
+  const job = ++pipBuilding;
+  $('pipOpen').disabled = true; pipProgress(0, 'Preparando o texto…');
+  const scene = makeScene();
+  scene.draw(0);
+  let blob = null;
+  try{ blob = await encodeFast(scene, job); }catch(e){ blob = null; }
+  if (blob === 'cancel') return;
+  if (!blob){
+    if (!window.MediaRecorder || !scene.c.captureStream){ pipProgress(0, 'Este navegador não consegue criar a janela flutuante.'); return; }
+    blob = await encodeRealtime(scene, job);
+    if (blob === 'cancel') return;
+  }
+  if (pipUrl) URL.revokeObjectURL(pipUrl);
+  pipUrl = URL.createObjectURL(blob);
+  pipVideo.src = pipUrl; pipVideo.load();
+  const m = Math.floor(scene.duration / 60), s = Math.round(scene.duration % 60);
+  pipProgress(1, `Pronto · ${m ? m + ' min ' : ''}${s} s de texto rolando`);
+  $('pipOpen').disabled = false;
+}
+function syncPipUI(){
+  $('pSpeed').value = S.speed; $('pSpeedV').textContent = S.speed;
+  $('pFont').value = S.pipFont; $('pFontV').textContent = S.pipFont + ' px';
+}
+$('pSpeed').oninput = e => { S.speed = +e.target.value; $('pSpeedV').textContent = S.speed; saveS(); };
+$('pFont').oninput = e => { S.pipFont = +e.target.value; $('pFontV').textContent = S.pipFont + ' px'; saveS(); };
+$('pipRebuild').onclick = () => buildPip();
+$('goPip').onclick = () => {
+  persistEditor();
+  if (!current.text.trim()) return toast('Escreva ou cole o roteiro primeiro.');
+  show('pip'); syncPipUI(); buildPip();
+};
+$('pipBack').onclick = () => {
+  pipBuilding++;
+  try{ if (document.pictureInPictureElement) document.exitPictureInPicture(); }catch(e){}
+  pipVideo.pause(); show('editor');
+};
+pipVideo.addEventListener('enterpictureinpicture', () => { pipVideo.pause(); pipVideo.currentTime = 0; });
+pipVideo.addEventListener('webkitpresentationmodechanged', () => {
+  if (pipVideo.webkitPresentationMode === 'picture-in-picture'){ pipVideo.pause(); pipVideo.currentTime = 0; }
+});
+$('pipOpen').onclick = async () => {
+  try{ await pipVideo.play(); }catch(e){}
+  try{
+    if (document.pictureInPictureEnabled && pipVideo.requestPictureInPicture){
+      await pipVideo.requestPictureInPicture();
+    } else if (pipVideo.webkitSupportsPresentationMode && pipVideo.webkitSupportsPresentationMode('picture-in-picture')){
+      pipVideo.webkitSetPresentationMode('picture-in-picture');
+    } else {
+      toast('Este navegador não abriu a janela flutuante. No iPhone, tente pelo Safari.', 4000);
+    }
+  }catch(e){
+    toast('Não abriu a janela flutuante. No iPhone, tente abrir o link direto no Safari.', 4000);
+  }
+};
 
 renderList();
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
