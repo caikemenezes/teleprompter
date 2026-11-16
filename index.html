@@ -210,12 +210,14 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
     <div style="height:6px;background:var(--panel2);border-radius:3px;overflow:hidden"><div id="pipBar" style="height:100%;width:0;background:var(--accent)"></div></div>
     <div class="set" style="margin:6px 0 0"><label>Velocidade <em id="pSpeedV"></em></label><input type="range" id="pSpeed" min="5" max="200" step="1"></div>
     <div class="set" style="margin:0"><label>Letra na janelinha <em id="pFontV"></em></label><input type="range" id="pFont" min="40" max="120" step="2"></div>
-    <button class="btn" id="pipRebuild" style="flex:0 0 52px">Aplicar velocidade e letra</button>
+    <div class="set" style="margin:0"><label>Tempo antes de começar a rolar</label>
+      <div class="seg" data-key="pipLead"><button data-v="0">0 s</button><button data-v="5">5 s</button><button data-v="10">10 s</button><button data-v="15">15 s</button><button data-v="20">20 s</button></div></div>
+    <button class="btn" id="pipRebuild" style="flex:0 0 52px">Aplicar ajustes</button>
     <button class="btn red" id="pipOpen" style="flex:0 0 52px" disabled>Abrir janela flutuante</button>
     <p class="hint" style="line-height:1.6">
       1. Toque em <b>Abrir janela flutuante</b>. O texto vira uma janelinha.<br>
-      2. Saia do app e abra a <b>Câmera</b> do celular (ou Instagram, CapCut…).<br>
-      3. Comece a gravar e toque em ▶ na janelinha. Ela tem pausar e voltar/avançar.<br>
+      2. <b>Toque em ▶ na janelinha ainda aqui</b>. Aparece uma contagem.<br>
+      3. Durante a contagem, abra a <b>Câmera</b> e comece a gravar. O texto começa a rolar quando a contagem acabar.<br>
       4. Arraste a janelinha para perto da lente. Dá para aumentar com dois dedos.
     </p>
   </div>
@@ -254,7 +256,7 @@ const store = {
   set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
 };
 
-const DEFAULTS = {speed:40, fontSize:34, area:42, dim:55, countdown:3, quality:1080, align:'center', mirrorText:0, facing:'user', fit:'contain', pipFont:64};
+const DEFAULTS = {speed:40, fontSize:34, area:42, dim:55, countdown:3, quality:1080, align:'center', mirrorText:0, facing:'user', fit:'contain', pipFont:64, pipLead:10};
 let S = Object.assign({}, DEFAULTS, store.get('tp_settings', {}));
 let scripts = store.get('tp_scripts', null);
 if (!scripts){
@@ -612,7 +614,7 @@ $('openSettings2').onclick = () => { if (recording) return toast('Pare a gravaç
 /* ---------- Floating mode (Picture-in-Picture) ----------
    The text is rendered into a real video file, so it keeps playing in the
    floating window even while another app (the phone's Camera) is in front. */
-const PW = 960, PH = 540, FPS = 30, LEAD = 2, TAIL = 3;
+const PW = 960, PH = 540, FPS = 30, TAIL = 3;
 const pipVideo = $('pipVideo');
 let pipUrl = null, pipBuilding = 0;
 
@@ -640,6 +642,7 @@ function makeScene(){
   // keep the same reading pace (lines per second) as the camera mode
   const speed = S.speed * fs / S.fontSize;
   const maxPos = Math.max(0, lines.length * lh - lh * 2);
+  const LEAD = S.pipLead;
   const duration = LEAD + maxPos / speed + TAIL;
   function draw(t){
     const pos = Math.min(maxPos, Math.max(0, (t - LEAD) * speed));
@@ -659,6 +662,15 @@ function makeScene(){
     ctx.setTransform(1,0,0,1,0,0);
     ctx.fillStyle = '#ff3b30';
     ctx.beginPath(); ctx.moveTo(8, top + lh*0.3); ctx.lineTo(24, top + lh*0.45); ctx.lineTo(8, top + lh*0.6); ctx.fill();
+    if (t < LEAD && LEAD >= 1){
+      // countdown badge so there is time to switch to the camera app
+      const n = Math.ceil(LEAD - t);
+      ctx.fillStyle = 'rgba(255,59,48,.95)';
+      ctx.beginPath(); ctx.arc(PW - 80, PH - 80, 58, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = `800 64px -apple-system, "Segoe UI", Roboto, Arial, sans-serif`;
+      ctx.fillText(String(n), PW - 80, PH - 78);
+    }
   }
   return {c, draw, duration};
 }
@@ -733,6 +745,7 @@ async function buildPip(){
   $('pipOpen').disabled = false;
 }
 function syncPipUI(){
+  syncSettingsUI();
   $('pSpeed').value = S.speed; $('pSpeedV').textContent = S.speed;
   $('pFont').value = S.pipFont; $('pFontV').textContent = S.pipFont + ' px';
 }
