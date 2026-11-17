@@ -255,7 +255,8 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
     <div class="set"><label>Contagem antes de gravar</label>
       <div class="seg" data-key="countdown"><button data-v="0">Sem</button><button data-v="3">3 s</button><button data-v="5">5 s</button></div></div>
     <div class="set"><label>Qualidade</label>
-      <div class="seg" data-key="quality"><button data-v="720">720p</button><button data-v="1080">1080p</button><button data-v="2160">4K</button></div></div>
+      <div class="seg" data-key="quality"><button data-v="720">720p</button><button data-v="1080">1080p</button><button data-v="2160">4K</button></div>
+      <p class="hint" style="margin-top:6px">1080p é o ideal. 4K gera arquivos muito grandes e o iPhone pode não conseguir salvar.</p></div>
     <div class="set"><label>Imagem na tela</label>
       <div class="seg" data-key="fit"><button data-v="contain">Real (sem cortar)</button><button data-v="cover">Preencher</button></div></div>
     <div class="set"><label>Alinhamento do texto</label>
@@ -279,6 +280,8 @@ const store = {
 
 const DEFAULTS = {speed:40, fontSize:34, area:42, dim:55, countdown:3, quality:1080, align:'center', mirrorText:0, facing:'user', fit:'contain', pipFont:64, pipLead:10};
 let S = Object.assign({}, DEFAULTS, store.get('tp_settings', {}));
+// one-time: 4K files were too big to save on iPhone, move back to 1080p
+if (!S.qFix1){ if (S.quality === 2160) S.quality = 1080; S.qFix1 = 1; store.set('tp_settings', S); }
 let scripts = store.get('tp_scripts', null);
 if (!scripts){
   scripts = [{id: Date.now()+'', title:'Exemplo', updated: Date.now(),
@@ -421,7 +424,7 @@ window.addEventListener('resize', () => { measure(); render(); });
 
 /* ---------- Camera ---------- */
 const video = $('video');
-let chunkBufs = [], readErr = null;
+let chunkBufs = [], readErr = null, recBytes = 0;
 let stream = null, recorder = null, chunks = [], recording = false, recStart = 0, timerT = null, wakeLock = null;
 let lastBlob = null, lastType = '';
 
@@ -539,7 +542,10 @@ async function beginRec(){
   cd.style.display = 'none'; counting = false;
 
   chunks = []; chunkBufs = []; readErr = null;
-  const bps = {720:8e6, 1080:16e6, 2160:45e6}[S.quality] || 16e6;
+  // kept moderate on purpose: a web page on iPhone can't share or keep very large files
+  // (1080p ≈ 60 MB per minute, 720p ≈ 30 MB, 4K ≈ 150 MB)
+  const bps = {720:4e6, 1080:8e6, 2160:20e6}[S.quality] || 8e6;
+  recBytes = 0;
   try{
     recorder = new MediaRecorder(stream, Object.assign({videoBitsPerSecond: bps}, type ? {mimeType:type} : {}));
   }catch(e){
@@ -550,8 +556,10 @@ async function beginRec(){
   // file can become unreadable later (share sheet opens empty, saving fails), so we never rely on it.
   recorder.ondataavailable = e => {
     if (!e.data || !e.data.size) return;
-    chunks.push(e.data);
-    chunkBufs.push(e.data.arrayBuffer().catch(err => { readErr = err; return null; }));
+    recBytes += e.data.size;
+    // keep only one copy in memory: the bytes, or the original piece if it couldn't be read
+    const piece = e.data;
+    chunkBufs.push(piece.arrayBuffer().catch(err => { readErr = err; return piece; }));
   };
   recorder.onstop = finishRec;
   recorder.start(1000);
@@ -562,7 +570,8 @@ async function beginRec(){
 }
 function tick(){
   const s = Math.floor((Date.now() - recStart) / 1000);
-  $('timer').textContent = String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+  $('timer').textContent = String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0')
+    + (recBytes ? ' · ' + Math.round(recBytes / 1e6) + ' MB' : '');
 }
 let recDur = 0, recThumb = '';
 function snapshot(){
@@ -586,7 +595,7 @@ async function finishRec(){
   const type = lastType.split(';')[0] || 'video/mp4';
   const bufs = await Promise.all(chunkBufs);
   // bytes copied during recording -> a file the iPhone can always read; old way only as a last resort
-  const blob = bufs.length && bufs.every(b => b) ? new Blob(bufs, {type}) : new Blob(chunks, {type});
+  const blob = new Blob(bufs, {type});
   const copyErr = readErr && (readErr.name || String(readErr));
   chunks = []; chunkBufs = []; recorder = null;
   stopStream();
