@@ -740,6 +740,7 @@ function fileName(){
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 let savedOnce = false;
 function setSaveHint(){
+  sharing = false; $('saveHint').style.color = '';
   $('saveHint').textContent = IS_IOS
     ? 'Na tela que abrir, toque em "Salvar Vídeo". Ele vai para o app Fotos.'
     : 'O vídeo vai para a pasta Download e aparece na galeria (Google Fotos → Download).';
@@ -759,17 +760,35 @@ function prepareShareFile(){
   try{ shareFile = new File([lastBlob], fileName(), {type}); }catch(e){ shareFile = null; }
 }
 function markSaved(){ savedOnce = true; $('saveBtn').textContent = 'Salvar de novo'; }
+function saveStatus(msg, color){ const h = $('saveHint'); h.textContent = msg; h.style.color = color || ''; }
+let sharing = false;
 $('saveBtn').onclick = () => {
   if (!lastBlob) return;
   if (IS_IOS){
     // iPhone: the share sheet is the only way a site reaches the Photos app ("Salvar Vídeo").
     // Never fall back to a download link here: in the home-screen app it opens a Safari tab that can't load the video.
-    if (!navigator.share || !shareFile){
-      toast('Este iPhone não abriu a tela de compartilhar. Atualize o iOS e tente de novo.', 5000); return;
+    if (sharing){
+      saveStatus('A tela de salvar anterior ainda está aberta. Feche ela (arraste para baixo) e toque de novo.', 'var(--accent)');
+      sharing = false;   // let the next tap try again even if iPhone never answered
+      return;
     }
-    navigator.share({files:[shareFile]}).then(markSaved).catch(e => {
-      if (e && e.name === 'AbortError') return;
-      toast(`Não abriu a tela de salvar (${e && e.name || 'erro'}). Toque de novo em "Salvar na galeria do celular".`, 5000);
+    // a new File on every tap: iPhone refuses to share the same File object twice
+    const type = (lastBlob.type || 'video/mp4').split(';')[0];
+    let file = shareFile;
+    try{ file = new File([lastBlob], fileName(), {type}); }catch(e){}
+    if (!navigator.share || !file){
+      saveStatus('Este iPhone não abriu a tela de compartilhar. Atualize o iOS e tente de novo.', 'var(--accent)'); return;
+    }
+    sharing = true;
+    saveStatus(`Abrindo a tela de salvar… (${fmtSize(lastBlob.size)}) Escolha "Salvar Vídeo".`);
+    navigator.share({files:[file]}).then(() => {
+      sharing = false; markSaved();
+      saveStatus('Pronto. Confira no app Fotos (pode levar alguns segundos para aparecer).', 'var(--ok)');
+    }).catch(e => {
+      sharing = false;
+      const n = e && e.name || 'erro';
+      if (n === 'AbortError') saveStatus('Tela de salvar fechada sem salvar. Toque de novo quando quiser.');
+      else saveStatus(`Não deu para salvar (${n}). Toque de novo em "Salvar na galeria do celular".`, 'var(--accent)');
     });
     return;
   }
