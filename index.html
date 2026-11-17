@@ -581,28 +581,36 @@ async function finishRec(){
   stopStream();
   const item = {id: Date.now() + '', title: (current && current.title) || 'Sem título', created: Date.now(),
                 type: blob.type, size: blob.size, dur: recDur, thumb: recThumb, blob};
-  // keep it inside the app right away, so leaving or closing never loses it
-  try{ await dbPut(item); item.inApp = true; }catch(e){ item.inApp = false; }
+  // show it right away; keep it inside the app in the background
+  item.inApp = 'saving';
   openReview(item, 'camera');
+  item.saving = dbPut(item, p => { if (reviewItem === item) setAppSaved(item, p); })
+    .then(() => { item.inApp = true; }, e => { item.inApp = false; item.err = e && (e.name || e.message); })
+    .then(() => { if (reviewItem === item) setAppSaved(item); });
 }
 
 /* ---------- Videos kept on this phone (IndexedDB; never uploaded) ---------- */
 /* 'videos' holds the small info (title, date, thumbnail); 'data' holds the video bytes.
-   Bytes are stored as an ArrayBuffer, not a Blob: on iPhone a Blob read back from the
-   database after the app was closed often can't be shared or played anymore. */
+   Bytes are stored as ArrayBuffer pieces of 4 MB ("<id>#<n>"), not one Blob: on iPhone a Blob
+   read back after the app was closed often can't be shared, and one huge value fails to save.
+   The info row is written last, so a video only shows up once all its pieces are in. */
+const PIECE = 4 * 1024 * 1024;
 let dbP = null;
 function db(){
   if (!dbP) dbP = new Promise((res, rej) => {
     const r = indexedDB.open('tp_videos', 2);
+    const to = setTimeout(() => { dbP = null; rej(new Error('banco ocupado')); }, 8000);
     r.onupgradeneeded = () => {
       const d = r.result;
       if (!d.objectStoreNames.contains('videos')) d.createObjectStore('videos', {keyPath: 'id'});
       if (!d.objectStoreNames.contains('data')) d.createObjectStore('data', {keyPath: 'id'});
     };
-    r.onsuccess = () => res(r.result); r.onerror = () => { dbP = null; rej(r.error); };
+    r.onsuccess = () => { clearTimeout(to); const d = r.result; d.onversionchange = () => { d.close(); dbP = null; }; res(d); };
+    r.onerror = () => { clearTimeout(to); dbP = null; rej(r.error); };
   });
   return dbP;
 }
+const pieceRange = id => IDBKeyRange.bound(id + '#', id + '#￿');
 function tx(stores, mode, fn){
   return db().then(d => new Promise((res, rej) => {
     const t = d.transaction(stores, mode);
@@ -611,25 +619,38 @@ function tx(stores, mode, fn){
     t.oncomplete = () => res(out); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
   }));
 }
-async function dbPut(item){
+const metaOf = item => ({id: item.id, title: item.title, created: item.created, type: item.type,
+                         size: item.size, dur: item.dur, thumb: item.thumb, pieces: item.pieces});
+async function dbPut(item, onProgress){
   try{ navigator.storage && navigator.storage.persist && navigator.storage.persist(); }catch(e){}
-  const buf = await item.blob.arrayBuffer();
-  const {inApp, blob, ...meta} = item;
-  return tx(['videos', 'data'], 'readwrite', st => { st('data').put({id: item.id, buf}); st('videos').put(meta); });
+  const blob = item.blob, n = Math.max(1, Math.ceil(blob.size / PIECE));
+  for (let i = 0; i < n; i++){
+    const buf = await blob.slice(i * PIECE, Math.min(blob.size, (i + 1) * PIECE)).arrayBuffer();
+    await tx(['data'], 'readwrite', st => { st('data').put({id: item.id + '#' + String(i).padStart(5, '0'), buf}); });
+    onProgress && onProgress((i + 1) / n);
+  }
+  item.pieces = n;
+  await tx(['videos'], 'readwrite', st => { st('videos').put(metaOf(item)); });
 }
 const dbAll = () => tx(['videos'], 'readonly', st => st('videos').getAll());
-const dbDel = id => tx(['videos', 'data'], 'readwrite', st => { st('data').delete(id); st('videos').delete(id); });
+const dbDel = id => tx(['videos', 'data'], 'readwrite', st => {
+  st('data').delete(pieceRange(id)); st('data').delete(id); st('videos').delete(id);
+});
 async function loadVideo(item){
-  const rec = await tx(['data'], 'readonly', st => st('data').get(item.id));
   const type = item.type || 'video/mp4';
-  if (rec && rec.buf) return new Blob([rec.buf], {type});
+  const parts = await tx(['data'], 'readonly', st => st('data').getAll(pieceRange(item.id)));
+  if (parts && parts.length){
+    parts.sort((a, b) => a.id < b.id ? -1 : 1);
+    return new Blob(parts.map(p => p.buf), {type});
+  }
+  const one = await tx(['data'], 'readonly', st => st('data').get(item.id));   // earlier test version
+  if (one && one.buf) return new Blob([one.buf], {type});
   if (item.blob){
-    // older recordings were kept as a Blob: copy the bytes out and store them the new way
+    // the first version kept a Blob: read it and store it the new way
     const buf = await item.blob.arrayBuffer();
-    try{ await tx(['videos', 'data'], 'readwrite', st => {
-      st('data').put({id: item.id, buf}); const {blob, inApp, ...meta} = item; st('videos').put(meta);
-    }); }catch(e){}
-    return new Blob([buf], {type});
+    const blob = new Blob([buf], {type});
+    try{ await dbPut(Object.assign({}, item, {blob})); }catch(e){}
+    return blob;
   }
   throw new Error('sem dados');
 }
@@ -686,15 +707,25 @@ document.addEventListener('visibilitychange', () => {
 
 /* ---------- Review ---------- */
 let reviewItem = null, reviewFrom = 'camera';
+function setAppSaved(item, progress){
+  const el = $('appSaved');
+  if (item.inApp === 'saving'){
+    el.style.color = 'var(--muted)';
+    el.textContent = `Guardando em "Meus vídeos"… ${Math.round((progress || 0) * 100)}%`;
+  } else if (item.inApp){
+    el.style.color = 'var(--ok)';
+    el.textContent = reviewFrom === 'camera' ? '✓ Guardado em "Meus vídeos" aqui no app' : `${item.title || 'Sem título'} · ${fmtDate(item.created)}`;
+  } else {
+    el.style.color = 'var(--accent)';
+    el.textContent = `⚠ Não deu para guardar no app${item.err ? ' (' + item.err + ')' : ''}. Salve na galeria do celular.`;
+  }
+}
 function openReview(item, from){
   reviewItem = item; reviewFrom = from; lastBlob = item.blob;
   const rv = $('reviewVideo');
   if (rv.src) URL.revokeObjectURL(rv.src);
   rv.src = URL.createObjectURL(item.blob);
-  $('appSaved').style.color = item.inApp ? 'var(--ok)' : 'var(--accent)';
-  $('appSaved').textContent = item.inApp
-    ? (from === 'camera' ? '✓ Guardado em "Meus vídeos" aqui no app' : `${item.title || 'Sem título'} · ${fmtDate(item.created)}`)
-    : '⚠ Não deu para guardar no app (pouco espaço?). Salve na galeria do celular.';
+  setAppSaved(item);
   $('retakeBtn').style.display = from === 'camera' ? '' : 'none';
   savedOnce = false; $('saveBtn').textContent = 'Salvar na galeria do celular'; setSaveHint();
   prepareShareFile();
@@ -766,7 +797,9 @@ $('doneBtn').onclick = () => {
 };
 $('deleteVidBtn').onclick = async () => {
   if (!confirm('Apagar este vídeo do app?' + (savedOnce ? '' : ' Se ainda não salvou na galeria do celular, ele será perdido.'))) return;
-  if (reviewItem.inApp){ try{ await dbDel(reviewItem.id); }catch(e){} }
+  const it = reviewItem;
+  if (it.saving){ try{ await it.saving; }catch(e){} }
+  try{ await dbDel(it.id); }catch(e){}
   closeReview();
 };
 
