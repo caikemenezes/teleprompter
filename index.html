@@ -188,7 +188,8 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 <section id="review" class="screen">
   <video id="reviewVideo" playsinline controls></video>
   <div class="revBar">
-    <button class="btn red" id="saveBtn">Salvar vídeo</button>
+    <button class="btn red" id="saveBtn">Salvar na galeria</button>
+    <p class="hint" id="saveHint" style="text-align:center"></p>
     <div class="row">
       <button class="btn" id="retakeBtn">Regravar</button>
       <button class="btn" id="discardBtn">Descartar</button>
@@ -549,6 +550,7 @@ function finishRec(){
   const rv = $('reviewVideo');
   if (rv.src) URL.revokeObjectURL(rv.src);
   rv.src = URL.createObjectURL(lastBlob);
+  savedOnce = false; $('saveBtn').textContent = 'Salvar na galeria'; setSaveHint();
   stopStream(); show('review');
 }
 document.addEventListener('visibilitychange', () => {
@@ -563,27 +565,43 @@ function fileName(){
   const ext = lastType.includes('mp4') ? 'mp4' : 'webm';
   return `${base}_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.${ext}`;
 }
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+let savedOnce = false;
+function setSaveHint(){
+  $('saveHint').textContent = IS_IOS
+    ? 'Na tela que abrir, toque em "Salvar Vídeo". Ele vai para o app Fotos.'
+    : 'O vídeo vai para a pasta Download e aparece na galeria (Google Fotos → Download).';
+}
+function downloadBlob(name){
+  const url = URL.createObjectURL(lastBlob);
+  const a = document.createElement('a'); a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
 $('saveBtn').onclick = async () => {
   if (!lastBlob) return;
   const name = fileName();
   const file = new File([lastBlob], name, {type: lastBlob.type});
-  if (navigator.canShare && navigator.canShare({files:[file]})){
-    try{ await navigator.share({files:[file]}); return; }
+  // iPhone: the share sheet is the only way a site can reach the Photos app ("Salvar Vídeo").
+  // Android: a direct download lands in the gallery's Download album.
+  if (IS_IOS && navigator.canShare && navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file]}); savedOnce = true; $('saveBtn').textContent = 'Salvar de novo'; return; }
     catch(e){ if (e && e.name === 'AbortError') return; }
   }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(lastBlob); a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
-  toast('Vídeo baixado. Confira na pasta Downloads ou na galeria.');
+  downloadBlob(name); savedOnce = true; $('saveBtn').textContent = 'Salvar de novo';
+  toast(IS_IOS ? 'Vídeo baixado. Abra Arquivos → Downloads e use "Salvar Vídeo".' : 'Vídeo salvo! Está na galeria, no álbum Download.', 4000);
 };
 function leaveReview(){
   const rv = $('reviewVideo'); rv.pause();
   if (rv.src){ URL.revokeObjectURL(rv.src); rv.removeAttribute('src'); rv.load(); }
   lastBlob = null;
 }
-$('retakeBtn').onclick = () => { leaveReview(); openCamera(); };
+$('retakeBtn').onclick = () => {
+  if (!savedOnce && !confirm('Este vídeo ainda não foi salvo. Regravar e perder ele?')) return;
+  leaveReview(); openCamera();
+};
 $('discardBtn').onclick = () => {
-  if (!confirm('Descartar este vídeo?')) return;
+  if (!confirm(savedOnce ? 'Sair desta tela?' : 'Descartar este vídeo? Ele ainda não foi salvo.')) return;
   leaveReview(); releaseWake(); show('editor');
 };
 
