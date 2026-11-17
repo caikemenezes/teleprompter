@@ -421,6 +421,7 @@ window.addEventListener('resize', () => { measure(); render(); });
 
 /* ---------- Camera ---------- */
 const video = $('video');
+let chunkBufs = [], readErr = null;
 let stream = null, recorder = null, chunks = [], recording = false, recStart = 0, timerT = null, wakeLock = null;
 let lastBlob = null, lastType = '';
 
@@ -537,7 +538,7 @@ async function beginRec(){
   }
   cd.style.display = 'none'; counting = false;
 
-  chunks = [];
+  chunks = []; chunkBufs = []; readErr = null;
   const bps = {720:8e6, 1080:16e6, 2160:45e6}[S.quality] || 16e6;
   try{
     recorder = new MediaRecorder(stream, Object.assign({videoBitsPerSecond: bps}, type ? {mimeType:type} : {}));
@@ -545,7 +546,13 @@ async function beginRec(){
     recorder = new MediaRecorder(stream);
   }
   lastType = recorder.mimeType || type || 'video/mp4';
-  recorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  // Copy every 1-second piece into memory as soon as it arrives. On iPhone the recorder's own
+  // file can become unreadable later (share sheet opens empty, saving fails), so we never rely on it.
+  recorder.ondataavailable = e => {
+    if (!e.data || !e.data.size) return;
+    chunks.push(e.data);
+    chunkBufs.push(e.data.arrayBuffer().catch(err => { readErr = err; return null; }));
+  };
   recorder.onstop = finishRec;
   recorder.start(1000);
   recording = true; recStart = Date.now();
@@ -576,8 +583,12 @@ function stopRec(){
   try{ recorder.stop(); }catch(e){ finishRec(); }
 }
 async function finishRec(){
-  const blob = new Blob(chunks, {type: lastType.split(';')[0]});
-  chunks = []; recorder = null;
+  const type = lastType.split(';')[0] || 'video/mp4';
+  const bufs = await Promise.all(chunkBufs);
+  // bytes copied during recording -> a file the iPhone can always read; old way only as a last resort
+  const blob = bufs.length && bufs.every(b => b) ? new Blob(bufs, {type}) : new Blob(chunks, {type});
+  const copyErr = readErr && (readErr.name || String(readErr));
+  chunks = []; chunkBufs = []; recorder = null;
   stopStream();
   const item = {id: Date.now() + '', title: (current && current.title) || 'Sem título', created: Date.now(),
                 type: blob.type, size: blob.size, dur: recDur, thumb: recThumb, blob};
@@ -585,7 +596,10 @@ async function finishRec(){
   item.inApp = 'saving';
   openReview(item, 'camera');
   item.saving = dbPut(item, p => { if (reviewItem === item) setAppSaved(item, p); })
-    .then(() => { item.inApp = true; }, e => { item.inApp = false; item.err = e && (e.name || e.message); })
+    .then(() => { item.inApp = true; }, e => {
+      item.inApp = false;
+      item.err = [(e && (e.name || e.message)) || 'sem detalhe', copyErr && 'cópia: ' + copyErr, fmtSize(blob.size)].filter(Boolean).join(' · ');
+    })
     .then(() => { if (reviewItem === item) setAppSaved(item); });
 }
 
@@ -616,7 +630,9 @@ function tx(stores, mode, fn){
     const t = d.transaction(stores, mode);
     const req = fn(name => t.objectStore(name)); let out;
     if (req) req.onsuccess = () => out = req.result;
-    t.oncomplete = () => res(out); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+    t.oncomplete = () => res(out);
+    t.onerror = () => rej(t.error || new Error('erro no banco'));
+    t.onabort = () => rej(t.error || new Error('banco cancelou'));
   }));
 }
 const metaOf = item => ({id: item.id, title: item.title, created: item.created, type: item.type,
