@@ -35,6 +35,9 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .card{background:var(--panel);border-radius:14px;padding:14px 16px;margin-bottom:10px;width:100%;text-align:left;display:block}
 .card b{display:block;font-size:17px;margin-bottom:4px}
 .card span{color:var(--muted);font-size:14px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.vcard{display:flex;gap:14px;align-items:center}
+.vcard .th{flex:0 0 58px;height:84px;border-radius:8px;background:#000 center/cover no-repeat}
+.vcard div{min-width:0}
 .empty{color:var(--muted);text-align:center;margin-top:18vh;padding:0 30px;line-height:1.5}
 .fab{position:fixed;left:16px;right:16px;bottom:calc(var(--sb) + 16px);height:54px;border-radius:16px;
   background:var(--accent);color:#fff;font-weight:600;font-size:17px}
@@ -117,6 +120,9 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 <section id="home" class="screen on">
   <div class="top">
     <h1>Roteiros</h1>
+    <button class="iconbtn" id="openGallery" aria-label="Meus vídeos">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="13" height="14" rx="2"/><path d="M16 10l5-3v10l-5-3"/></svg>
+    </button>
     <button class="iconbtn" id="openSettings1" aria-label="Ajustes">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
     </button>
@@ -188,13 +194,27 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 <section id="review" class="screen">
   <video id="reviewVideo" playsinline controls></video>
   <div class="revBar">
-    <button class="btn red" id="saveBtn">Salvar na galeria</button>
+    <p class="hint" id="appSaved" style="text-align:center;color:var(--ok)"></p>
+    <button class="btn red" id="saveBtn">Salvar na galeria do celular</button>
     <p class="hint" id="saveHint" style="text-align:center"></p>
     <div class="row">
       <button class="btn" id="retakeBtn">Regravar</button>
-      <button class="btn" id="discardBtn">Descartar</button>
+      <button class="btn" id="doneBtn">Pronto</button>
     </div>
+    <button class="btn" id="deleteVidBtn" style="flex:0 0 40px;background:none;color:var(--accent);font-weight:500">Apagar este vídeo</button>
   </div>
+</section>
+
+<!-- GALLERY -->
+<section id="gallery" class="screen">
+  <div class="top">
+    <button class="iconbtn" id="galBack" aria-label="Voltar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <h1 style="font-size:19px">Meus vídeos</h1>
+  </div>
+  <p class="hint" id="galInfo" style="padding:0 16px 8px"></p>
+  <div class="list" id="galList" style="padding-bottom:calc(var(--sb) + 20px)"></div>
 </section>
 
 <!-- PIP -->
@@ -537,32 +557,119 @@ function tick(){
   const s = Math.floor((Date.now() - recStart) / 1000);
   $('timer').textContent = String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
 }
+let recDur = 0, recThumb = '';
+function snapshot(){
+  try{
+    const w = video.videoWidth, h = video.videoHeight; if (!w) return '';
+    const c = document.createElement('canvas'); const sc = 240 / Math.max(w, h);
+    c.width = Math.round(w * sc); c.height = Math.round(h * sc);
+    c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.7);
+  }catch(e){ return ''; }
+}
 function stopRec(){
   if (!recorder) return;
+  recDur = Date.now() - recStart; recThumb = snapshot();
   running = false; recording = false;
   clearInterval(timerT); $('timer').style.display = 'none';
   $('recBtn').classList.remove('rec'); $('flipCam').style.opacity = 1;
   try{ recorder.stop(); }catch(e){ finishRec(); }
 }
-function finishRec(){
-  lastBlob = new Blob(chunks, {type: lastType.split(';')[0]});
+async function finishRec(){
+  const blob = new Blob(chunks, {type: lastType.split(';')[0]});
   chunks = []; recorder = null;
-  const rv = $('reviewVideo');
-  if (rv.src) URL.revokeObjectURL(rv.src);
-  rv.src = URL.createObjectURL(lastBlob);
-  savedOnce = false; $('saveBtn').textContent = 'Salvar na galeria'; setSaveHint();
-  stopStream(); show('review');
+  stopStream();
+  const item = {id: Date.now() + '', title: (current && current.title) || 'Sem título', created: Date.now(),
+                type: blob.type, size: blob.size, dur: recDur, thumb: recThumb, blob};
+  // keep it inside the app right away, so leaving or closing never loses it
+  try{ await dbPut(item); item.inApp = true; }catch(e){ item.inApp = false; }
+  openReview(item, 'camera');
 }
+
+/* ---------- Videos kept on this phone (IndexedDB; never uploaded) ---------- */
+let dbP = null;
+function db(){
+  if (!dbP) dbP = new Promise((res, rej) => {
+    const r = indexedDB.open('tp_videos', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('videos', {keyPath: 'id'});
+    r.onsuccess = () => res(r.result); r.onerror = () => { dbP = null; rej(r.error); };
+  });
+  return dbP;
+}
+function tx(mode, fn){
+  return db().then(d => new Promise((res, rej) => {
+    const t = d.transaction('videos', mode); const st = t.objectStore('videos');
+    const req = fn(st); let out;
+    if (req) req.onsuccess = () => out = req.result;
+    t.oncomplete = () => res(out); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+  }));
+}
+const dbPut = item => {
+  try{ navigator.storage && navigator.storage.persist && navigator.storage.persist(); }catch(e){}
+  const {inApp, ...rec} = item; return tx('readwrite', st => st.put(rec));
+};
+const dbAll = () => tx('readonly', st => st.getAll());
+const dbDel = id => tx('readwrite', st => st.delete(id));
+
+const fmtSize = b => b > 1e9 ? (b/1e9).toFixed(1).replace('.', ',') + ' GB' : Math.max(1, Math.round(b/1e6)) + ' MB';
+const fmtDur = ms => { const s = Math.round(ms/1000); return Math.floor(s/60) + ':' + String(s%60).padStart(2,'0'); };
+const fmtDate = t => { const d = new Date(t), p = n => String(n).padStart(2,'0'); return `${p(d.getDate())}/${p(d.getMonth()+1)} ${p(d.getHours())}:${p(d.getMinutes())}`; };
+
+async function openGallery(){
+  show('gallery');
+  const list = $('galList'); list.innerHTML = '';
+  let items = [];
+  try{ items = await dbAll(); }catch(e){}
+  items.sort((a, b) => b.created - a.created);
+  const total = items.reduce((s, v) => s + (v.size || 0), 0);
+  let free = '';
+  try{ const est = await navigator.storage.estimate(); if (est.quota) free = ` · espaço livre ~${fmtSize(est.quota - est.usage)}`; }catch(e){}
+  $('galInfo').textContent = items.length
+    ? `${items.length} vídeo${items.length > 1 ? 's' : ''} · ${fmtSize(total)}${free}. Ficam só neste celular, dentro do app.`
+    : '';
+  if (!items.length){
+    const p = document.createElement('p'); p.className = 'empty';
+    p.textContent = 'Nenhum vídeo ainda. Tudo o que você gravar aparece aqui automaticamente.';
+    list.appendChild(p); return;
+  }
+  items.forEach(v => {
+    const b = document.createElement('button'); b.className = 'card vcard';
+    const th = document.createElement('i'); th.className = 'th';
+    if (v.thumb) th.style.backgroundImage = `url("${v.thumb}")`;
+    const box = document.createElement('div');
+    const t = document.createElement('b'); t.textContent = v.title || 'Sem título';
+    const s = document.createElement('span'); s.textContent = `${fmtDate(v.created)} · ${fmtDur(v.dur || 0)} · ${fmtSize(v.size || 0)}`;
+    box.append(t, s); b.append(th, box);
+    b.onclick = () => { v.inApp = true; openReview(v, 'gallery'); };
+    list.appendChild(b);
+  });
+}
+$('openGallery').onclick = openGallery;
+$('galBack').onclick = () => { renderList(); show('home'); };
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && recording) stopRec();
   if (!document.hidden && $('cam').classList.contains('on')) requestWake();
 });
 
 /* ---------- Review ---------- */
+let reviewItem = null, reviewFrom = 'camera';
+function openReview(item, from){
+  reviewItem = item; reviewFrom = from; lastBlob = item.blob;
+  const rv = $('reviewVideo');
+  if (rv.src) URL.revokeObjectURL(rv.src);
+  rv.src = URL.createObjectURL(item.blob);
+  $('appSaved').style.color = item.inApp ? 'var(--ok)' : 'var(--accent)';
+  $('appSaved').textContent = item.inApp
+    ? (from === 'camera' ? '✓ Guardado em "Meus vídeos" aqui no app' : `${item.title || 'Sem título'} · ${fmtDate(item.created)}`)
+    : '⚠ Não deu para guardar no app (pouco espaço?). Salve na galeria do celular.';
+  $('retakeBtn').style.display = from === 'camera' ? '' : 'none';
+  savedOnce = false; $('saveBtn').textContent = 'Salvar na galeria do celular'; setSaveHint();
+  show('review');
+}
 function fileName(){
-  const d = new Date(), p = n => String(n).padStart(2,'0');
-  const base = (current && current.title ? current.title : 'video').replace(/[^\p{L}\p{N}]+/gu,'-').replace(/^-|-$/g,'').slice(0,40) || 'video';
-  const ext = lastType.includes('mp4') ? 'mp4' : 'webm';
+  const d = new Date(reviewItem ? reviewItem.created : Date.now()), p = n => String(n).padStart(2,'0');
+  const base = ((reviewItem && reviewItem.title) || 'video').replace(/[^\p{L}\p{N}]+/gu,'-').replace(/^-|-$/g,'').slice(0,40) || 'video';
+  const ext = (lastBlob && lastBlob.type.includes('mp4')) ? 'mp4' : 'webm';
   return `${base}_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.${ext}`;
 }
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -596,13 +703,23 @@ function leaveReview(){
   if (rv.src){ URL.revokeObjectURL(rv.src); rv.removeAttribute('src'); rv.load(); }
   lastBlob = null;
 }
+function closeReview(){
+  const from = reviewFrom; leaveReview(); reviewItem = null;
+  if (from === 'gallery') openGallery();
+  else { releaseWake(); show('editor'); }
+}
 $('retakeBtn').onclick = () => {
-  if (!savedOnce && !confirm('Este vídeo ainda não foi salvo. Regravar e perder ele?')) return;
+  if (!reviewItem.inApp && !savedOnce && !confirm('Este vídeo não foi guardado. Regravar e perder ele?')) return;
   leaveReview(); openCamera();
 };
-$('discardBtn').onclick = () => {
-  if (!confirm(savedOnce ? 'Sair desta tela?' : 'Descartar este vídeo? Ele ainda não foi salvo.')) return;
-  leaveReview(); releaseWake(); show('editor');
+$('doneBtn').onclick = () => {
+  if (!reviewItem.inApp && !savedOnce && !confirm('Este vídeo não foi guardado. Sair e perder ele?')) return;
+  closeReview();
+};
+$('deleteVidBtn').onclick = async () => {
+  if (!confirm('Apagar este vídeo do app?' + (savedOnce ? '' : ' Se ainda não salvou na galeria do celular, ele será perdido.'))) return;
+  if (reviewItem.inApp){ try{ await dbDel(reviewItem.id); }catch(e){} }
+  closeReview();
 };
 
 /* ---------- Settings ---------- */
