@@ -709,6 +709,12 @@ document.addEventListener('visibilitychange', () => {
 let reviewItem = null, reviewFrom = 'camera';
 function setAppSaved(item, progress){
   const el = $('appSaved');
+  // while the video is still being kept in the app, don't hand the same file to the iPhone at the same time
+  const busy = item.inApp === 'saving';
+  $('saveBtn').disabled = busy;
+  $('saveBtn').style.opacity = busy ? .45 : 1;
+  if (busy) $('saveBtn').textContent = 'Aguarde, guardando o vídeo…';
+  else if (!savedOnce) $('saveBtn').textContent = 'Salvar na galeria do celular';
   if (item.inApp === 'saving'){
     el.style.color = 'var(--muted)';
     el.textContent = `Guardando em "Meus vídeos"… ${Math.round((progress || 0) * 100)}%`;
@@ -725,9 +731,9 @@ function openReview(item, from){
   const rv = $('reviewVideo');
   if (rv.src) URL.revokeObjectURL(rv.src);
   rv.src = URL.createObjectURL(item.blob);
-  setAppSaved(item);
   $('retakeBtn').style.display = from === 'camera' ? '' : 'none';
   savedOnce = false; $('saveBtn').textContent = 'Salvar na galeria do celular'; setSaveHint();
+  setAppSaved(item);
   prepareShareFile();
   show('review');
 }
