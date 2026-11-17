@@ -664,6 +664,7 @@ function openReview(item, from){
     : '⚠ Não deu para guardar no app (pouco espaço?). Salve na galeria do celular.';
   $('retakeBtn').style.display = from === 'camera' ? '' : 'none';
   savedOnce = false; $('saveBtn').textContent = 'Salvar na galeria do celular'; setSaveHint();
+  prepareShareFile();
   show('review');
 }
 function fileName(){
@@ -685,23 +686,37 @@ function downloadBlob(name){
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
-$('saveBtn').onclick = async () => {
+let shareFile = null;
+function prepareShareFile(){
+  // built ahead of the tap: iPhone only opens the share sheet if it is called right away
+  shareFile = null;
   if (!lastBlob) return;
-  const name = fileName();
-  const file = new File([lastBlob], name, {type: lastBlob.type});
-  // iPhone: the share sheet is the only way a site can reach the Photos app ("Salvar Vídeo").
-  // Android: a direct download lands in the gallery's Download album.
-  if (IS_IOS && navigator.canShare && navigator.canShare({files:[file]})){
-    try{ await navigator.share({files:[file]}); savedOnce = true; $('saveBtn').textContent = 'Salvar de novo'; return; }
-    catch(e){ if (e && e.name === 'AbortError') return; }
+  const type = (lastBlob.type || 'video/mp4').split(';')[0];
+  try{ shareFile = new File([lastBlob], fileName(), {type}); }catch(e){ shareFile = null; }
+}
+function markSaved(){ savedOnce = true; $('saveBtn').textContent = 'Salvar de novo'; }
+$('saveBtn').onclick = () => {
+  if (!lastBlob) return;
+  if (IS_IOS){
+    // iPhone: the share sheet is the only way a site reaches the Photos app ("Salvar Vídeo").
+    // Never fall back to a download link here: in the home-screen app it opens a Safari tab that can't load the video.
+    if (!navigator.share || !shareFile){
+      toast('Este iPhone não abriu a tela de compartilhar. Atualize o iOS e tente de novo.', 5000); return;
+    }
+    navigator.share({files:[shareFile]}).then(markSaved).catch(e => {
+      if (e && e.name === 'AbortError') return;
+      toast(`Não abriu a tela de salvar (${e && e.name || 'erro'}). Toque de novo em "Salvar na galeria do celular".`, 5000);
+    });
+    return;
   }
-  downloadBlob(name); savedOnce = true; $('saveBtn').textContent = 'Salvar de novo';
-  toast(IS_IOS ? 'Vídeo baixado. Abra Arquivos → Downloads e use "Salvar Vídeo".' : 'Vídeo salvo! Está na galeria, no álbum Download.', 4000);
+  // Android: a direct download lands in the gallery's Download album.
+  downloadBlob(fileName()); markSaved();
+  toast('Vídeo salvo! Está na galeria, no álbum Download.', 4000);
 };
 function leaveReview(){
   const rv = $('reviewVideo'); rv.pause();
   if (rv.src){ URL.revokeObjectURL(rv.src); rv.removeAttribute('src'); rv.load(); }
-  lastBlob = null;
+  lastBlob = null; shareFile = null;
 }
 function closeReview(){
   const from = reviewFrom; leaveReview(); reviewItem = null;
